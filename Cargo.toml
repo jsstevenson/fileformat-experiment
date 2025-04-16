@@ -1,0 +1,12 @@
+[package]
+name = "fileformat"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-trait = "0.1.88"
+futures = "0.3.31"
+itertools = "0.14.0"
+noodles-bgzf = { version = "0.39.0", features = ["async"] }
+noodles-vcf = { version = "0.77.0", features = ["async"] }
+tokio = { version = "1.44.2", features = ["full"] }
