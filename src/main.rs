@@ -10,6 +10,6 @@ async fn main() {
     let path = PathBuf::from(
         r"/Users/jss009/code/vrs_anvil_toolkit/u08_release_data/gregor_consortium_u06_sorted_chrY_V2_VT_VEP_VRS.vcf.gz",
     );
-    let _ = vcf::load_vcf(path).await;
+    let _ = vcf::stream_from_vcf(path).await;
     ()
 }

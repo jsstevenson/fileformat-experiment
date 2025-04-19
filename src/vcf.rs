@@ -17,16 +17,63 @@ use tokio::{
 #[derive(Debug)]
 pub enum VcfError {
     UnsupportedFiletype,
-    MyErr, // placeholder, basically
+    ParseFailure(String),
+    NullField,
+    TmpErr, // placeholder, basically
 }
 
-// attrs to stream from a VCF row
+/// Represents the different kind of supported VRS variations
+///
+/// Currently, the VCF annotator can only translate to alleles, so other variation
+/// types supported by VCF get dropped.
+enum VariationType {
+    Allele,
+    // TODO others
+}
+
+impl VariationType {
+    /// Returns an ID for each variation type.
+    ///
+    /// When we output to the compressed file, this lets us e.g. treat "VA." as "1".
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the mapping fails (This is ~impossible)
+    fn to_id(&self) -> Result<u8, ()> {
+        match self {
+            VariationType::Allele => Ok(1),
+        }
+    }
+}
+
+/// Contains a single set of VRS attributes grabbed from an INFO field.
 #[derive(Debug)]
 struct VrsAlleleAttrs {
     vrs_id: String,
-    vrs_start: u64,
-    vrs_end: u64,
+    vrs_start: i32,
+    vrs_end: i32,
     vrs_state: String,
+}
+
+impl VrsAlleleAttrs {
+    /// Convert VRS ID to compressed form
+    ///
+    /// strip ga4gh: if it's there, change the type value to a shortened ID)
+    ///
+    /// # Errors
+    ///
+    /// If unrecognized prefix is encountered (this should be impossible)
+    fn vrs_id_to_vrsix(&self) -> Result<String, VcfError> {
+        let no_namespace = self.vrs_id.strip_prefix("ga4gh:").unwrap_or(&self.vrs_id);
+        match no_namespace {
+            s if s.starts_with("VA.") => {
+                let rest = s.strip_prefix("VA.").unwrap();
+                let rep = VariationType::Allele.to_id().unwrap();
+                Ok(format!("{}{}", rep, rest))
+            }
+            _ => Err(VcfError::TmpErr),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -57,16 +104,22 @@ fn get_vrs_str_field(
         if let info::field::value::Array::String(array_elements) = array {
             let iter = array_elements.iter().map(|res_opt| match res_opt {
                 Ok(Some(cow)) => Ok(cow.to_string()),
-                Ok(None) => Err(VcfError::MyErr),
-                Err(_) => Err(VcfError::MyErr),
+                Ok(None) => Ok("".to_string()),
+                Err(_) => Err(VcfError::ParseFailure(
+                    "Individual array element failed to parse".to_string(),
+                )),
             });
             let collected: Result<Vec<_>, _> = iter.collect();
             collected.map(|vec| vec.into_iter())
         } else {
-            Err(VcfError::MyErr)
+            Err(VcfError::ParseFailure(
+                "Failed to parse as array of strings".to_string(),
+            ))
         }
     } else {
-        Err(VcfError::MyErr)
+        Err(VcfError::ParseFailure(
+            "Failed to parse as array".to_string(),
+        ))
     }
 }
 
@@ -76,20 +129,36 @@ fn get_vrs_pos(
     field: VrsVcfFieldName,
 ) -> Result<impl Iterator<Item = i32>, VcfError> {
     if let Some(Ok(Some(InfoValue::Array(array)))) = info.get(header, field.as_str()) {
-        if let info::field::value::Array::Integer(array_elements) = array {
-            let iter = array_elements.iter().map(|res_opt| match res_opt {
-                Ok(Some(num)) => Ok(num),
-                Ok(None) => Err(VcfError::MyErr),
-                Err(_) => Err(VcfError::MyErr),
-            });
-            let collected: Result<Vec<_>, _> = iter.collect();
-            collected.map(|v| v.into_iter())
-        } else {
-            // TODO handle case where strings need to be coerced
-            Err(VcfError::MyErr)
+        match array {
+            info::field::value::Array::Integer(array_elements) => {
+                let iter = array_elements.iter().map(|res_opt| match res_opt {
+                    Ok(Some(num)) => Ok(num),
+                    Ok(None) => Err(VcfError::TmpErr), // TODO handle this case
+                    Err(_) => Err(VcfError::ParseFailure(
+                        "Individual array element failed to parse".to_string(),
+                    )),
+                });
+                let collected: Result<Vec<_>, _> = iter.collect();
+                collected.map(|v| v.into_iter())
+            }
+            // handle old cases where the position columns were strings
+            info::field::value::Array::String(array_elements) => {
+                let iter = array_elements.iter().map(|res_opt| match res_opt {
+                    Ok(Some(cow)) => Ok(cow.to_string().parse::<i32>().unwrap()),
+                    Ok(None) => Err(VcfError::TmpErr), // TODO handle this case
+                    Err(_) => Err(VcfError::ParseFailure(
+                        "Individual array element failed to parse".to_string(),
+                    )),
+                });
+                let collected: Result<Vec<_>, _> = iter.collect();
+                collected.map(|vec| vec.into_iter())
+            }
+            _ => Err(VcfError::ParseFailure(
+                "Failed to parse as array of ints".to_string(),
+            )),
         }
     } else {
-        Err(VcfError::MyErr)
+        Err(VcfError::TmpErr)
     }
 }
 
@@ -161,29 +230,72 @@ async fn get_reader(
     }
 }
 
-pub async fn load_vcf(vcf_path: PathBuf) -> Result<(), VcfError> {
+struct FileData {
+    chrom: String,
+    pos: u32,
+    uri_id: u8,
+    vrs_hash: String, // 1 byte type ID + 32 bytes, ASCII
+    vrs_start: i32,
+    vrs_end: i32,
+    vrs_state: String, // varchar but should be ASCII
+}
+
+// File layout
+// <header>
+// <records -- uri_id, chrom, pos
+// <vartype + vrs_id, seek offset>
+// <vrs start, seek offset>
+// <vrs end, seek offset>
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
+
+enum OutfileError {
+    General
+}
+
+
+fn write_data_to_file(file_data: FileData) -> Result<(), OutfileError> {
+
+    Ok(())
+}
+
+pub async fn load_vcf(vcf_path: PathBuf, file_uri: Option<String>) -> Result<(), VcfError> {
     let mut reader = get_reader(vcf_path)
         .await
-        .map_err(|_| VcfError::MyErr)
+        .map_err(|_| VcfError::TmpErr)
         .unwrap();
     let header = reader.read_header().await.unwrap();
 
     let mut records = reader.records();
 
-    while let Some(record) = records.try_next().await.map_err(|_| VcfError::MyErr)? {
+    let mut out_file = File::create("output.txt")
+        .await
+        .map_err(|_| VcfError::TmpErr)?;
+
+    let uri_id: u8 = 1;  // TODO figure out how to calculate this
+
+    while let Some(record) = records.try_next().await.map_err(|_| VcfError::TmpErr)? {
         let chrom = record.reference_sequence_name();
-        let pos = record.variant_start().unwrap().unwrap().get();
+        let pos = record.variant_start().unwrap().unwrap().get() as u32;
 
         let mut stream = record.iter_vrs_attrs(&header).await;
-        while let Some(attrs) = stream.next().await {
-            match attrs {
-                Ok(attrs) => (),
-                Err(attrs) => eprintln!("{:?}", attrs)
+        while let Some(attrs_result) = stream.next().await {
+            match attrs_result {
+                Ok(attrs) => {
+                    let data = FileData {
+                        chrom: chrom.clone(),
+                        pos,
+                        uri_id,
+                        vrs_hash: attrs.vrs_id_to_vrsix().unwrap(),
+                        vrs_start: attrs.vrs_start,
+                        vrs_end: attrs.vrs_end,
+                        vrs_state: attrs.vrs_state
+                    };
+                    write_data_to_file(data);
+                }
+                Err(attrs) => eprintln!("{:?}", attrs),
             }
         }
-
-
     }
-
     Ok(())
 }
