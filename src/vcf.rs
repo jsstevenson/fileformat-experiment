@@ -203,8 +203,8 @@ impl InfoFieldTranspose for Record {
         .map(|(vrs_id, vrs_start, vrs_end, vrs_state)| {
             Ok(VrsAlleleAttrs {
                 vrs_id,
-                vrs_start: vrs_start as u64,
-                vrs_end: vrs_end as u64,
+                vrs_start,
+                vrs_end,
                 vrs_state,
             })
         });
@@ -230,6 +230,7 @@ async fn get_reader(
     }
 }
 
+#[derive(Debug)]
 struct FileData {
     chrom: String,
     pos: u32,
@@ -254,8 +255,9 @@ enum OutfileError {
 }
 
 
-fn write_data_to_file(file_data: FileData) -> Result<(), OutfileError> {
+async fn write_data_to_file(file_data: FileData) -> Result<(), OutfileError> {
 
+    //println!("{:?}", file_data);
     Ok(())
 }
 
@@ -267,6 +269,7 @@ pub async fn load_vcf(vcf_path: PathBuf, file_uri: Option<String>) -> Result<(),
     let header = reader.read_header().await.unwrap();
 
     let mut records = reader.records();
+    let mut count = 0;
 
     let mut out_file = File::create("output.txt")
         .await
@@ -283,7 +286,7 @@ pub async fn load_vcf(vcf_path: PathBuf, file_uri: Option<String>) -> Result<(),
             match attrs_result {
                 Ok(attrs) => {
                     let data = FileData {
-                        chrom: chrom.clone(),
+                        chrom: chrom.to_string(),
                         pos,
                         uri_id,
                         vrs_hash: attrs.vrs_id_to_vrsix().unwrap(),
@@ -292,10 +295,12 @@ pub async fn load_vcf(vcf_path: PathBuf, file_uri: Option<String>) -> Result<(),
                         vrs_state: attrs.vrs_state
                     };
                     write_data_to_file(data);
+                    count += 1;
                 }
                 Err(attrs) => eprintln!("{:?}", attrs),
             }
         }
     }
+    println!("{}", count);
     Ok(())
 }
