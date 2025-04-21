@@ -247,7 +247,7 @@ struct FileData {
 // <vartype + vrs_id, seek offset>
 // <vrs start, seek offset>
 // <vrs end, seek offset>
-use tokio::fs::File;
+use tokio::fs::{File, OpenOptions};
 use tokio::io::AsyncWriteExt;
 
 enum OutfileError {
@@ -255,13 +255,17 @@ enum OutfileError {
 }
 
 
-async fn write_data_to_file(file_data: FileData) -> Result<(), OutfileError> {
-
-    //println!("{:?}", file_data);
+async fn write_data_to_file(out_file: &mut tokio::fs::File, line: String) -> Result<(), OutfileError> {
+    out_file.write_all(line.as_bytes())
+        .await
+        .map_err(|_| OutfileError::General)?;
+    out_file.flush()
+        .await
+        .map_err(|_| OutfileError::General)?;
     Ok(())
 }
 
-pub async fn load_vcf(vcf_path: PathBuf, file_uri: Option<String>) -> Result<(), VcfError> {
+pub async fn load_vcf(vcf_path: PathBuf, file_uri: Option<String>, output_file: PathBuf) -> Result<(), VcfError> {
     let mut reader = get_reader(vcf_path)
         .await
         .map_err(|_| VcfError::TmpErr)
@@ -269,11 +273,13 @@ pub async fn load_vcf(vcf_path: PathBuf, file_uri: Option<String>) -> Result<(),
     let header = reader.read_header().await.unwrap();
 
     let mut records = reader.records();
-    let mut count = 0;
-
-    let mut out_file = File::create("output.txt")
+    let mut out_file = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(output_file)
         .await
         .map_err(|_| VcfError::TmpErr)?;
+    let mut count = 0;
 
     let uri_id: u8 = 1;  // TODO figure out how to calculate this
 
@@ -294,13 +300,19 @@ pub async fn load_vcf(vcf_path: PathBuf, file_uri: Option<String>) -> Result<(),
                         vrs_end: attrs.vrs_end,
                         vrs_state: attrs.vrs_state
                     };
-                    write_data_to_file(data);
+                    let line = format!("{}-{}-{}\n", data.chrom, data.pos, data.uri_id);
+                    let _ = write_data_to_file(&mut out_file, line).await;
+                    let line = format!("{}{}\n", data.vrs_hash, count);
+                    let _ = write_data_to_file(&mut out_file, line).await;
+                    let line = format!("{}-{}\n", data.vrs_start, count);
+                    let _ = write_data_to_file(&mut out_file, line).await;
+                    let line = format!("{}-{}\n", data.vrs_end, count);
+                    let _ = write_data_to_file(&mut out_file, line).await;
                     count += 1;
                 }
                 Err(attrs) => eprintln!("{:?}", attrs),
             }
         }
     }
-    println!("{}", count);
     Ok(())
 }
